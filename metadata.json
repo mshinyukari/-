@@ -1,0 +1,7 @@
+{
+  "name": "【底辺チューバーからの脱却】名 を たくさん 伝えれる 画期的ツール",
+  "description": "A rhythm game where you pronounce the Japanese character 'な' (na) to the beat of a 175 BPM song. Uses real-time speech-to-text to detect your pronunciation, increment your score, and trigger falling characters on screen.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
