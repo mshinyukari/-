@@ -529,43 +529,50 @@ const Game: React.FC = () => {
     if (metronomeInterval.current) clearInterval(metronomeInterval.current);
     metronomeInterval.current = window.setInterval(playBeat, BEAT_INTERVAL_MS);
   };
+
+  const playCountdownSound = (count: number) => {
+      // Ensure context exists
+      if (!audioContextRef.current) return;
+      
+      // Ensure context is running. If suspended (often happens before user interaction), try to resume.
+      // Note: We also resume in handleStart, but this is a failsafe.
+      const ctx = audioContextRef.current;
+      if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+      }
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      const now = ctx.currentTime;
+      // Scale volume slightly down for beep so it's not piercing
+      const beepVol = volume * 0.5;
+
+      if (count > 0) {
+          // "Blip" sound (High tick)
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, now);
+          gain.gain.setValueAtTime(beepVol, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+          osc.start(now);
+          osc.stop(now + 0.1);
+      } else {
+          // "Go" sound (Higher, brighter)
+          osc.type = 'square'; // Square wave for retro game feel
+          osc.frequency.setValueAtTime(1200, now);
+          osc.frequency.linearRampToValueAtTime(1800, now + 0.1); // Slide up
+          gain.gain.setValueAtTime(beepVol * 0.8, now); // Slightly quieter for square wave
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+          osc.start(now);
+          osc.stop(now + 0.4);
+      }
+  };
   
   useEffect(() => {
     if (gameState === 'COUNTDOWN') {
-      // --- Play Countdown SE ---
-      const ctx = audioContextRef.current;
-      if (ctx) {
-           // Ensure context is running (sometimes it suspends)
-           if (ctx.state === 'suspended') ctx.resume();
-
-           const osc = ctx.createOscillator();
-           const gain = ctx.createGain();
-           osc.connect(gain);
-           gain.connect(ctx.destination);
-           
-           const now = ctx.currentTime;
-           // Scale volume slightly down for beep so it's not piercing
-           const beepVol = volume * 0.5;
-
-           if (countdown > 0) {
-               // "Blip" sound (High tick)
-               osc.type = 'sine';
-               osc.frequency.setValueAtTime(880, now);
-               gain.gain.setValueAtTime(beepVol, now);
-               gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-               osc.start(now);
-               osc.stop(now + 0.1);
-           } else {
-               // "Go" sound (Higher, brighter)
-               osc.type = 'square'; // Square wave for retro game feel
-               osc.frequency.setValueAtTime(1200, now);
-               osc.frequency.linearRampToValueAtTime(1800, now + 0.1); // Slide up
-               gain.gain.setValueAtTime(beepVol * 0.8, now); // Slightly quieter for square wave
-               gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-               osc.start(now);
-               osc.stop(now + 0.4);
-           }
-      }
+      playCountdownSound(countdown);
 
       if (countdown > 0) {
         const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
@@ -574,7 +581,7 @@ const Game: React.FC = () => {
         setGameState('PLAYING');
       }
     }
-  }, [gameState, countdown, volume]);
+  }, [gameState, countdown]); // Removed volume dependency to prevent double triggers if volume changes
 
   useEffect(() => {
     if (gameState === 'PLAYING') {
@@ -590,7 +597,10 @@ const Game: React.FC = () => {
       startAudio();
       // Start BGM
       if (bgmRef.current) {
-          bgmRef.current.play().catch(e => console.warn("BGM autoplay prevented", e));
+          bgmRef.current.play().catch(e => {
+              console.warn("BGM autoplay prevented:", e);
+              // Retry once if needed or just log
+          });
       }
       startGameAudioAnalysis(); 
       
@@ -681,29 +691,35 @@ const Game: React.FC = () => {
   }, [cleanupAudio, stopMicAnalysis]);
 
   const handleStart = async () => {
-    // 1. Reset Game State first (which might clean up old contexts)
-    resetGame();
+    // 1. Audio Context Init (Must be first for User Gesture)
+    // Initialize or Resume AudioContext immediately on user interaction
+    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (audioContextRef.current.state === 'suspended') {
+        try {
+            await audioContextRef.current.resume();
+        } catch (e) {
+            console.warn("AudioContext resume failed:", e);
+        }
+    }
 
     // 2. UNLOCK BGM: Play silence/briefly
     if (bgmRef.current) {
         try {
             // Play then immediately pause to unlock the element for future programmatic use
-            bgmRef.current.play().then(() => {
-                bgmRef.current?.pause();
-                bgmRef.current!.currentTime = 0;
-            }).catch(e => console.warn("BGM Unlock failed (normal if already unlocked):", e));
+            const playPromise = bgmRef.current.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    bgmRef.current?.pause();
+                    bgmRef.current!.currentTime = 0;
+                }).catch(e => console.warn("BGM Unlock failed (normal if already unlocked):", e));
+            }
         } catch(e) { console.warn("BGM access error", e); }
     }
 
-    // 3. UNLOCK AUDIO CONTEXT: Create or resume immediately on user gesture
-    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    if (audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume();
-    }
-
-    // 4. Connect to API and Start Countdown
+    resetGame();
+    // 3. Connect to API and Start Countdown
     connectToGemini(); 
     setGameState('COUNTDOWN');
   };
