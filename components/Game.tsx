@@ -803,39 +803,40 @@ const Game: React.FC = () => {
     switch(gameState) {
       case 'READY':
         return (
-          <div className="w-full max-w-5xl flex flex-col items-center justify-center p-4 relative z-10">
+          // Added overflow-y-auto to allow scrolling on small mobile screens
+          <div className="w-full h-full overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center p-4 relative z-10 py-8">
             {/* Title Section */}
-            <div className="relative mb-8 md:mb-12 flex flex-col items-center text-center z-20">
+            <div className="relative mb-8 md:mb-12 flex flex-col items-center text-center z-20 mt-4 md:mt-0">
                 {/* Subtitle Top */}
-                <div className="mb-2 bg-yellow-300 text-slate-800 px-6 py-2 rounded-full font-black text-lg md:text-xl border-4 border-white shadow-md transform -rotate-2">
+                <div className="mb-2 bg-yellow-300 text-slate-800 px-4 md:px-6 py-2 rounded-full font-black text-sm md:text-xl border-4 border-white shadow-md transform -rotate-2">
                     底辺チューバーからの脱却
                 </div>
                 
                 {/* Main Title Logo Group */}
                 <div className="flex flex-col items-center transform -rotate-1 hover:scale-105 transition-transform duration-300 cursor-default py-4">
-                    {/* Line 1 */}
+                    {/* Line 1 - Responsive Text Sizes */}
                     <div className="flex items-end justify-center flex-wrap gap-x-2 md:gap-x-4">
-                        <span className="text-[7rem] md:text-[9rem] font-black text-pink-500 leading-none drop-shadow-xl" 
-                              style={{ WebkitTextStroke: '4px white', paintOrder: 'stroke fill' }}>
+                        <span className="text-7xl sm:text-9xl md:text-[9rem] font-black text-pink-500 leading-none drop-shadow-xl" 
+                              style={{ WebkitTextStroke: '3px white', paintOrder: 'stroke fill' }}>
                             名
                         </span>
-                        <span className="text-4xl md:text-5xl font-black text-slate-800 leading-none"
+                        <span className="text-3xl sm:text-5xl md:text-5xl font-black text-slate-800 leading-none"
                               style={{ WebkitTextStroke: '2px white', paintOrder: 'stroke fill' }}>
                             を
                         </span>
-                        <span className="text-6xl md:text-7xl font-black text-slate-800 leading-none"
+                        <span className="text-5xl sm:text-7xl md:text-7xl font-black text-slate-800 leading-none"
                               style={{ WebkitTextStroke: '2.5px white', paintOrder: 'stroke fill' }}>
                             たくさん
                         </span>
-                        <span className="text-5xl md:text-6xl font-black text-slate-800 leading-none"
+                        <span className="text-4xl sm:text-6xl md:text-6xl font-black text-slate-800 leading-none"
                           style={{ WebkitTextStroke: '2px white', paintOrder: 'stroke fill' }}>
                             伝えれる
                         </span>
                     </div>
                     
-                    {/* Line 2 */}
+                    {/* Line 2 - Responsive Text Sizes */}
                     <div className="flex items-baseline justify-center mt-2">
-                        <span className="text-7xl md:text-8xl font-black text-slate-800"
+                        <span className="text-4xl sm:text-6xl md:text-8xl font-black text-slate-800"
                               style={{ WebkitTextStroke: '3px white', paintOrder: 'stroke fill' }}>
                             画期的ツール
                         </span>
@@ -843,14 +844,14 @@ const Game: React.FC = () => {
                 </div>
 
                 {/* Subtitle Bottom */}
-                <div className="text-slate-400 text-sm md:text-base font-bold mt-4 tracking-widest bg-white/50 px-4 py-1 rounded-full">
+                <div className="text-slate-400 text-xs md:text-base font-bold mt-4 tracking-widest bg-white/50 px-4 py-1 rounded-full">
                     的なもの
                 </div>
             </div>
 
-            <div className="flex flex-col md:flex-row gap-8 w-full items-stretch justify-center">
+            <div className="flex flex-col lg:flex-row gap-6 w-full max-w-5xl items-stretch justify-center">
                 {/* LEFT: Start & Mode Selection */}
-                <div className="flex-1 flex flex-col gap-6 min-h-[350px]">
+                <div className="flex-1 flex flex-col gap-6 order-1">
                      {/* Mode Selectors */}
                      <div className="bg-white/80 backdrop-blur rounded-3xl p-4 shadow-[0_4px_0_rgba(0,0,0,0.1)] flex flex-col gap-2 border-4 border-white">
                          <div className="text-cyan-500 font-bold text-center mb-2">モードをえらんでね</div>
@@ -859,13 +860,13 @@ const Game: React.FC = () => {
                                 <button
                                     key={mode}
                                     onClick={() => setGameMode(mode)}
-                                    className={`flex-1 py-3 font-bold text-lg rounded-2xl transition-all transform ${
+                                    className={`flex-1 py-3 font-bold text-sm md:text-lg rounded-2xl transition-all transform ${
                                         gameMode === mode 
                                         ? 'bg-yellow-300 text-slate-800 shadow-[0_4px_0_#d97706] translate-y-[-2px]' 
                                         : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
                                     }`}
                                 >
-                                    {mode === 'FULL' ? 'フル（72びょう）' : mode === '10s' ? '10びょう' : '30びょう'}
+                                    {mode === 'FULL' ? 'フル (72秒)' : mode === '10s' ? '10秒' : '30秒'}
                                 </button>
                             ))}
                          </div>
@@ -873,7 +874,7 @@ const Game: React.FC = () => {
 
                      <button 
                         onClick={handleStart} 
-                        className="group relative flex-1 w-full focus:outline-none transform transition-all hover:scale-[1.02] active:scale-95 duration-200"
+                        className="group relative flex-1 w-full focus:outline-none transform transition-all hover:scale-[1.02] active:scale-95 duration-200 min-h-[120px] md:min-h-[200px]"
                     >
                         <div className="absolute inset-0 bg-pink-300 rounded-[2rem] transform translate-y-2"></div>
                         <div className="absolute inset-0 bg-gradient-to-b from-pink-400 to-pink-500 rounded-[2rem] border-4 border-white shadow-inner flex flex-col items-center justify-center overflow-hidden">
@@ -881,9 +882,9 @@ const Game: React.FC = () => {
                             <div className="absolute top-[-20%] left-[-10%] w-32 h-32 bg-white/20 rotate-45 transform"></div>
                             <div className="absolute bottom-[-20%] right-[-10%] w-32 h-32 bg-white/20 rotate-12 transform"></div>
                             
-                            <span className="text-5xl font-black text-white drop-shadow-md z-10">始める！</span>
-                            <div className="bg-white/30 rounded-full px-6 py-2 mt-6 z-10">
-                                <span className="text-2xl font-bold text-white">
+                            <span className="text-4xl md:text-5xl font-black text-white drop-shadow-md z-10">始める！</span>
+                            <div className="bg-white/30 rounded-full px-6 py-2 mt-4 md:mt-6 z-10">
+                                <span className="text-lg md:text-2xl font-bold text-white">
                                     {gameMode === 'FULL' ? '72秒名を伝える' : gameMode === '10s' ? '10秒名を伝える' : '30秒名を伝える'}
                                 </span>
                             </div>
@@ -892,8 +893,8 @@ const Game: React.FC = () => {
                 </div>
 
                 {/* RIGHT: Settings Panel */}
-                <div className="flex-1">
-                     <div className="h-full bg-sky-200/90 backdrop-blur rounded-[2.5rem] border-8 border-white p-6 text-slate-700 flex flex-col justify-between shadow-lg relative overflow-hidden">
+                <div className="flex-1 order-2">
+                     <div className="h-auto lg:h-full bg-sky-200/90 backdrop-blur rounded-[2.5rem] border-8 border-white p-4 md:p-6 text-slate-700 flex flex-col justify-between shadow-lg relative overflow-hidden">
                          <div className="absolute top-[-20px] left-[-20px] w-20 h-20 bg-sky-300 rounded-full opacity-50"></div>
                          
                          <div className="bg-white text-sky-500 font-black px-6 py-2 rounded-full inline-block self-center mb-4 shadow-sm text-xl border-2 border-sky-100">
@@ -916,8 +917,8 @@ const Game: React.FC = () => {
                          </div>
 
                          {/* Mic Test Section */}
-                         <div className="bg-white/60 p-4 rounded-2xl flex-1 flex flex-col justify-center border-2 border-white">
-                             <div className="flex justify-between items-center mb-3">
+                         <div className="bg-white/60 p-4 rounded-2xl flex-1 flex flex-col justify-center border-2 border-white gap-3">
+                             <div className="flex justify-between items-center mb-1">
                                  <span className="font-bold text-sky-600">🎤 マイクテスト</span>
                                  <button 
                                     onClick={toggleMicTest}
@@ -928,9 +929,9 @@ const Game: React.FC = () => {
                              </div>
 
                              {/* Mic Selector */}
-                             <div className="mb-3">
+                             <div>
                                  <select 
-                                     className="w-full text-sm p-2 rounded-lg border-2 border-sky-200 text-slate-600 bg-white focus:outline-none focus:border-sky-400"
+                                     className="w-full text-sm p-2 rounded-lg border-2 border-sky-200 text-slate-600 bg-white focus:outline-none focus:border-sky-400 max-w-full truncate"
                                      value={selectedDeviceId}
                                      onChange={(e) => setSelectedDeviceId(e.target.value)}
                                  >
@@ -944,7 +945,7 @@ const Game: React.FC = () => {
                              </div>
 
                              {/* Visualizer & Threshold */}
-                             <div className="relative h-10 bg-gray-200 rounded-full border-4 border-white mb-3 overflow-hidden shadow-inner">
+                             <div className="relative h-10 bg-gray-200 rounded-full border-4 border-white overflow-hidden shadow-inner">
                                  <div 
                                     className="absolute top-0 bottom-0 w-1 bg-yellow-400 z-20"
                                     style={{ left: `${micThreshold}%` }}
@@ -956,7 +957,7 @@ const Game: React.FC = () => {
                              </div>
 
                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-slate-500 font-bold">📶 はんのうライン</span>
+                                <span className="text-xs text-slate-500 font-bold whitespace-nowrap">はんのうライン</span>
                                 <input 
                                     type="range" 
                                     min="0" max="100" 
