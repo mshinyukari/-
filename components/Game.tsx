@@ -10,7 +10,7 @@ const HIT_WINDOW_MS = 100; // Tightened window, but we check 8th notes now
 const CLEAR_THRESHOLDS = {
   '10s': 70,
   '30s': 210,
-  'FULL': 365
+  'FULL': 360
 };
 
 // SVG Component for the Crowd
@@ -66,7 +66,8 @@ const Game: React.FC = () => {
 
   // Settings State
   const [volume, setVolume] = useState(0.5);
-  const [bgmSource, setBgmSource] = useState<string>('/bgm/bgm.mp3');
+  // Default to public folder path, will fallback if fails
+  const [bgmSource, setBgmSource] = useState<string>('/bgm.mp3');
   const [micThreshold, setMicThreshold] = useState(30); // 0-100 visual scale
   const [inputLevel, setInputLevel] = useState(0);
   const [isMicTesting, setIsMicTesting] = useState(false);
@@ -87,6 +88,7 @@ const Game: React.FC = () => {
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const micCheckInterval = useRef<number | null>(null);
   const micAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveInputAudioContextRef = useRef<AudioContext | null>(null); // Track input context to prevent leaks
   const animationFrameRef = useRef<number | null>(null);
   const isGameActiveRef = useRef(false); // Strict control for scoring loop
 
@@ -106,19 +108,6 @@ const Game: React.FC = () => {
           bgmRef.current.volume = volume;
       }
   }, [volume]);
-
-  // Handle BGM File Selection
-  const handleBgmSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files && e.target.files[0]) {
-          const file = e.target.files[0];
-          const url = URL.createObjectURL(file);
-          setBgmSource(url);
-          // Revoke old URL if it was a blob URL (simple check if it starts with blob:)
-          if (bgmSource.startsWith('blob:')) {
-              URL.revokeObjectURL(bgmSource);
-          }
-      }
-  };
 
   // --- Device Management ---
   const fetchAudioDevices = useCallback(async () => {
@@ -209,6 +198,11 @@ const Game: React.FC = () => {
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
       audioContextRef.current = null;
+    }
+    // Clean up Live Input Context if exists
+    if (liveInputAudioContextRef.current && liveInputAudioContextRef.current.state !== 'closed') {
+        liveInputAudioContextRef.current.close();
+        liveInputAudioContextRef.current = null;
     }
   }, []);
 
@@ -451,6 +445,10 @@ const Game: React.FC = () => {
 
   const connectToGemini = useCallback(async () => {
     try {
+        if (!process.env.API_KEY) {
+            throw new Error("API Key not found. Please check your environment variables.");
+        }
+
         const stream = await getAudioStream();
         
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
@@ -460,6 +458,8 @@ const Game: React.FC = () => {
             callbacks: {
                 onopen: () => {
                     const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+                    liveInputAudioContextRef.current = inputAudioContext;
+                    
                     const source = inputAudioContext.createMediaStreamSource(stream);
                     const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
                     
@@ -519,20 +519,6 @@ const Game: React.FC = () => {
     
     const playBeat = () => {
         if (!audioContextRef.current) return;
-        const oscillator = audioContextRef.current.createOscillator();
-        const gainNode = audioContextRef.current.createGain();
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContextRef.current.destination);
-        
-        oscillator.type = 'sine'; // Soft sine wave for cuter sound
-        oscillator.frequency.setValueAtTime(880, audioContextRef.current.currentTime);
-        
-        const vol = 0.1 * volume; 
-        gainNode.gain.setValueAtTime(vol, audioContextRef.current.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.0001, audioContextRef.current.currentTime + 0.1);
-        
-        oscillator.start(audioContextRef.current.currentTime);
-        oscillator.stop(audioContextRef.current.currentTime + 0.1);
         
         // --- Sync Record ---
         lastBeatTimeRef.current = Date.now();
@@ -656,12 +642,8 @@ const Game: React.FC = () => {
       if(sessionPromise.current) {
           sessionPromise.current.then(session => session.close());
       }
-      // Revoke BGM blob if exists
-      if (bgmSource.startsWith('blob:')) {
-          URL.revokeObjectURL(bgmSource);
-      }
     };
-  }, [cleanupAudio, stopMicAnalysis, bgmSource]);
+  }, [cleanupAudio, stopMicAnalysis]);
 
   const handleStart = async () => {
     // 1. Reset Game State first (which might clean up old contexts)
@@ -772,7 +754,7 @@ const Game: React.FC = () => {
               className={`w-64 h-64 rounded-full border-8 border-white flex items-center justify-center bg-pink-200/30 backdrop-blur-sm transition-transform duration-75 ${isHitAnimating ? 'scale-110' : 'scale-100'}`}
             >
                 <div className={`w-48 h-48 bg-gradient-to-b from-pink-400 to-pink-500 rounded-full flex items-center justify-center shadow-[0_8px_0_rgba(219,39,119,0.2)] border-4 border-white transition-all duration-75 ${isHitAnimating ? 'brightness-110' : ''}`}>
-                     <span className="text-6xl font-black text-white drop-shadow-md select-none">な！</span>
+                     <span className="text-6xl font-black text-white drop-shadow-md select-none">な</span>
                 </div>
             </div>
         </div>
@@ -883,7 +865,7 @@ const Game: React.FC = () => {
                                         : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
                                     }`}
                                 >
-                                    {mode === 'FULL' ? 'フル（73びょう）' : mode === '10s' ? '10びょう' : '30びょう'}
+                                    {mode === 'FULL' ? 'フル（72びょう）' : mode === '10s' ? '10びょう' : '30びょう'}
                                 </button>
                             ))}
                          </div>
@@ -902,7 +884,7 @@ const Game: React.FC = () => {
                             <span className="text-5xl font-black text-white drop-shadow-md z-10">始める！</span>
                             <div className="bg-white/30 rounded-full px-6 py-2 mt-6 z-10">
                                 <span className="text-2xl font-bold text-white">
-                                    {gameMode === 'FULL' ? '73秒名を伝える' : gameMode === '10s' ? '10秒名を伝える' : '30秒名を伝える'}
+                                    {gameMode === 'FULL' ? '72秒名を伝える' : gameMode === '10s' ? '10秒名を伝える' : '30秒名を伝える'}
                                 </span>
                             </div>
                         </div>
@@ -931,18 +913,6 @@ const Game: React.FC = () => {
                                 onChange={(e) => setVolume(parseFloat(e.target.value))}
                                 className="w-full accent-yellow-400"
                              />
-                         </div>
-
-                         {/* BGM Selection - FIX for missing file */}
-                         <div className="mb-4 bg-white/50 p-4 rounded-2xl">
-                             <div className="font-bold text-sky-600 mb-2">📁 BGMをえらぶ</div>
-                             <input 
-                                 type="file" 
-                                 accept="audio/*"
-                                 onChange={handleBgmSelect}
-                                 className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100 cursor-pointer"
-                             />
-                             <div className="text-xs text-slate-400 mt-1">※BGMが再生されない場合は、ここでファイルを選択してください。</div>
                          </div>
 
                          {/* Mic Test Section */}
@@ -1115,9 +1085,14 @@ const Game: React.FC = () => {
                 setError(null); // Clear errors if audio loads successfully
             }}
             onError={(e) => {
-                console.warn("BGM Load Error:", e);
-                // Don't show critical error immediately for default path, user might not have set it.
-                // Just let them know via the text under the file input.
+                console.info("BGM Load Error for path:", bgmSource);
+                // Auto Fallback Logic
+                if (bgmSource === '/bgm.mp3') {
+                    setBgmSource('/bgm/bgm.mp3');
+                } else if (bgmSource === '/bgm/bgm.mp3') {
+                     // Try relative path as last resort
+                     setBgmSource('bgm.mp3');
+                }
             }}
         />
         <Crowd progress={Math.min(score / CLEAR_THRESHOLDS[gameMode], 1)} />
