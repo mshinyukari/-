@@ -532,6 +532,41 @@ const Game: React.FC = () => {
   
   useEffect(() => {
     if (gameState === 'COUNTDOWN') {
+      // --- Play Countdown SE ---
+      const ctx = audioContextRef.current;
+      if (ctx) {
+           // Ensure context is running (sometimes it suspends)
+           if (ctx.state === 'suspended') ctx.resume();
+
+           const osc = ctx.createOscillator();
+           const gain = ctx.createGain();
+           osc.connect(gain);
+           gain.connect(ctx.destination);
+           
+           const now = ctx.currentTime;
+           // Scale volume slightly down for beep so it's not piercing
+           const beepVol = volume * 0.5;
+
+           if (countdown > 0) {
+               // "Blip" sound (High tick)
+               osc.type = 'sine';
+               osc.frequency.setValueAtTime(880, now);
+               gain.gain.setValueAtTime(beepVol, now);
+               gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+               osc.start(now);
+               osc.stop(now + 0.1);
+           } else {
+               // "Go" sound (Higher, brighter)
+               osc.type = 'square'; // Square wave for retro game feel
+               osc.frequency.setValueAtTime(1200, now);
+               osc.frequency.linearRampToValueAtTime(1800, now + 0.1); // Slide up
+               gain.gain.setValueAtTime(beepVol * 0.8, now); // Slightly quieter for square wave
+               gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+               osc.start(now);
+               osc.stop(now + 0.4);
+           }
+      }
+
       if (countdown > 0) {
         const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
         return () => clearTimeout(timer);
@@ -539,7 +574,7 @@ const Game: React.FC = () => {
         setGameState('PLAYING');
       }
     }
-  }, [gameState, countdown]);
+  }, [gameState, countdown, volume]);
 
   useEffect(() => {
     if (gameState === 'PLAYING') {
