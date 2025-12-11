@@ -81,6 +81,7 @@ const Game: React.FC = () => {
   const metronomeInterval = useRef<number | null>(null);
   const gameTimer = useRef<number | null>(null);
   const bgmRef = useRef<HTMLAudioElement>(null);
+  const menuBgmRef = useRef<HTMLAudioElement>(null);
   
   // Refs for Mic Test & Game Audio Analysis
   const streamRef = useRef<MediaStream | null>(null);
@@ -104,6 +105,9 @@ const Game: React.FC = () => {
   useEffect(() => {
       if (bgmRef.current) {
           bgmRef.current.volume = volume;
+      }
+      if (menuBgmRef.current) {
+          menuBgmRef.current.volume = volume;
       }
   }, [volume]);
 
@@ -135,7 +139,7 @@ const Game: React.FC = () => {
              }
         }
     } catch (e) {
-        console.warn("Could not enumerate devices", e);
+        console.warn("Could not enumerate devices");
     }
   }, [selectedDeviceId]);
 
@@ -179,14 +183,22 @@ const Game: React.FC = () => {
     const existing = localStorage.getItem(key);
     let scores: ScoreEntry[] = existing ? JSON.parse(existing) : [];
     
+    // Safety check to ensure we only save primitives to avoid circular JSON errors
+    const safeSubs = typeof finalSubscribers === 'number' ? finalSubscribers : 0;
+    const safeHits = typeof finalHitCount === 'number' ? finalHitCount : 0;
+    
     // Check if scoreEntry supports hitCount (migration)
-    scores.push({ score: finalSubscribers, hitCount: finalHitCount, date: Date.now() });
+    scores.push({ score: safeSubs, hitCount: safeHits, date: Date.now() });
     
     // Sort descending and keep top 5
     scores.sort((a, b) => b.score - a.score);
     scores = scores.slice(0, 5);
     
-    localStorage.setItem(key, JSON.stringify(scores));
+    try {
+        localStorage.setItem(key, JSON.stringify(scores));
+    } catch (e) {
+        console.error("Failed to save score");
+    }
     setHighScores(scores);
   };
 
@@ -194,7 +206,11 @@ const Game: React.FC = () => {
     const key = `rhythm_na_subs_${gameMode}`;
     const existing = localStorage.getItem(key);
     if (existing) {
-        setHighScores(JSON.parse(existing));
+        try {
+            setHighScores(JSON.parse(existing));
+        } catch (e) {
+            setHighScores([]);
+        }
     } else {
         setHighScores([]);
     }
@@ -278,7 +294,7 @@ const Game: React.FC = () => {
         setIsMicTesting(true);
         setError(null);
     } catch (err) {
-        console.error("Mic access denied", err);
+        console.error("Mic access denied"); // Don't log event object
         setError("マイクにアクセスできませんでした。");
     }
   };
@@ -407,7 +423,7 @@ const Game: React.FC = () => {
         loop();
 
     } catch (err) {
-        console.error("Game Audio Init Error", err);
+        console.error("Game Audio Init Error"); // Don't log full error
         setError("マイクの開始に失敗しました。");
     }
   };
@@ -486,7 +502,7 @@ const Game: React.FC = () => {
                 },
                 onmessage: handleTranscription,
                 onerror: (e: ErrorEvent) => {
-                    console.error('Gemini API Error:', e);
+                    console.error('Gemini API Error'); // Prevent circular log
                 },
                 onclose: () => {
                     console.log('Gemini session closed.');
@@ -504,7 +520,7 @@ const Game: React.FC = () => {
         await sessionPromise.current;
 
     } catch (err) {
-        console.error("Failed to initialize Gemini session:", err);
+        console.error("Failed to initialize Gemini session"); // Prevent circular log
         setError("AIサーバーへの接続に失敗しました。ネット環境を確認するか、時間をおいて試してください。");
     }
   }, [handleTranscription]);
@@ -556,6 +572,19 @@ const Game: React.FC = () => {
   }, [gameState, countdown]);
 
   useEffect(() => {
+    // Menu BGM Logic
+    if (gameState === 'READY') {
+        if (menuBgmRef.current) {
+            menuBgmRef.current.play().catch(() => {});
+        }
+    } else {
+        // Stop Menu BGM for all other states
+        if (menuBgmRef.current) {
+            menuBgmRef.current.pause();
+            menuBgmRef.current.currentTime = 0;
+        }
+    }
+
     if (gameState === 'PLAYING') {
       isGameActiveRef.current = true;
       
@@ -569,7 +598,7 @@ const Game: React.FC = () => {
       startAudio();
       // Start BGM
       if (bgmRef.current) {
-          bgmRef.current.play().catch(e => console.warn("BGM autoplay prevented", e));
+          bgmRef.current.play().catch(e => console.warn("BGM autoplay prevented")); // sanitized
       }
       startGameAudioAnalysis(); 
       
@@ -615,7 +644,7 @@ const Game: React.FC = () => {
     } else {
       // READY / FINISHED
       isGameActiveRef.current = false;
-      // Pause BGM and reset
+      // Pause Game BGM and reset
       if (bgmRef.current) {
           bgmRef.current.pause();
           bgmRef.current.currentTime = 0;
@@ -674,8 +703,8 @@ const Game: React.FC = () => {
             bgmRef.current.play().then(() => {
                 bgmRef.current?.pause();
                 bgmRef.current!.currentTime = 0;
-            }).catch(e => console.warn("BGM Unlock failed (normal if already unlocked):", e));
-        } catch(e) { console.warn("BGM access error", e); }
+            }).catch(e => console.warn("BGM Unlock failed")); // sanitized
+        } catch(e) { console.warn("BGM access error"); } // sanitized
     }
 
     // 3. UNLOCK AUDIO CONTEXT: Create or resume immediately on user gesture
@@ -1121,10 +1150,16 @@ const Game: React.FC = () => {
                 setError(null); // Clear errors if audio loads successfully
             }}
             onError={(e) => {
-                console.warn("BGM Load Error:", e);
-                // Don't show critical error immediately for default path, user might not have set it.
-                // Just let them know via the text under the file input.
+                console.warn("BGM Load Error:", bgmSource); // SAFE LOGGING: Log string only, not event object
             }}
+        />
+        {/* Menu BGM */}
+        <audio 
+            ref={menuBgmRef} 
+            loop 
+            preload="auto"
+            src="/bgm/top.mp3"
+            onError={() => console.warn("Menu BGM not found")}
         />
         <Crowd progress={Math.min(score / CLEAR_THRESHOLDS[gameMode], 1)} />
         {fallingNas.map(na => <FallingNaComponent key={na.id} na={na} />)}
