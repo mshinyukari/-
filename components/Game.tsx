@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, Modality } from "@google/genai";
 import type { LiveServerMessage } from "@google/genai";
 import { GameState, FallingNa, GameMode, ScoreEntry } from '../types';
-import { MODE_DURATIONS, BEAT_INTERVAL_MS, COUNTDOWN_SECONDS } from '../constants';
+import { MODE_DURATIONS, BEAT_INTERVAL_MS, COUNTDOWN_SECONDS, BPM } from '../constants';
 import { encode } from '../utils/audioUtils';
 import FallingNaComponent from './FallingNa';
 
@@ -10,7 +10,7 @@ const HIT_WINDOW_MS = 100; // Tightened window, but we check 8th notes now
 const CLEAR_THRESHOLDS = {
   '10s': 70,
   '30s': 210,
-  'FULL': 365
+  'FULL': 360
 };
 
 // SVG Component for the Crowd
@@ -66,7 +66,6 @@ const Game: React.FC = () => {
 
   // Settings State
   const [volume, setVolume] = useState(0.5);
-  const [bgmSource, setBgmSource] = useState<string>('/bgm/bgm.mp3');
   const [micThreshold, setMicThreshold] = useState(30); // 0-100 visual scale
   const [inputLevel, setInputLevel] = useState(0);
   const [isMicTesting, setIsMicTesting] = useState(false);
@@ -78,15 +77,14 @@ const Game: React.FC = () => {
   const sessionPromise = useRef<Promise<any> | null>(null);
   const lastTranscription = useRef('');
   const audioContextRef = useRef<AudioContext | null>(null);
-  const metronomeInterval = useRef<number | null>(null);
   const gameTimer = useRef<number | null>(null);
-  const bgmRef = useRef<HTMLAudioElement>(null);
   
   // Refs for Mic Test & Game Audio Analysis
   const streamRef = useRef<MediaStream | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const micCheckInterval = useRef<number | null>(null);
   const micAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveInputAudioContextRef = useRef<AudioContext | null>(null); // Track input context to prevent leaks
   const animationFrameRef = useRef<number | null>(null);
   const isGameActiveRef = useRef(false); // Strict control for scoring loop
 
@@ -100,25 +98,10 @@ const Game: React.FC = () => {
   const startTimeRef = useRef<number>(0); // To calculate elapsed time for inflation
   const pauseStartTimeRef = useRef<number>(0); // To adjust startTimeRef after pause
 
-  // Sync BGM Volume
-  useEffect(() => {
-      if (bgmRef.current) {
-          bgmRef.current.volume = volume;
-      }
-  }, [volume]);
-
-  // Handle BGM File Selection
-  const handleBgmSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files && e.target.files[0]) {
-          const file = e.target.files[0];
-          const url = URL.createObjectURL(file);
-          setBgmSource(url);
-          // Revoke old URL if it was a blob URL (simple check if it starts with blob:)
-          if (bgmSource.startsWith('blob:')) {
-              URL.revokeObjectURL(bgmSource);
-          }
-      }
-  };
+  // BGM Refs
+  const bgmNextNoteTime = useRef(0);
+  const bgmSchedulerTimer = useRef<number | null>(null);
+  const menuBgmRef = useRef<HTMLAudioElement | null>(null);
 
   // --- Device Management ---
   const fetchAudioDevices = useCallback(async () => {
@@ -145,6 +128,53 @@ const Game: React.FC = () => {
     navigator.mediaDevices.addEventListener('devicechange', fetchAudioDevices);
     return () => navigator.mediaDevices.removeEventListener('devicechange', fetchAudioDevices);
   }, [fetchAudioDevices]);
+
+  // Handle Menu BGM
+  useEffect(() => {
+    if (!menuBgmRef.current) {
+        menuBgmRef.current = new Audio('/top.mp3');
+        menuBgmRef.current.loop = true;
+    }
+    const audio = menuBgmRef.current;
+    
+    // Safety check for valid volume
+    const safeVolume = Math.max(0, Math.min(1, volume));
+    audio.volume = safeVolume * 0.6; // Slightly quieter than SFX
+
+    const attemptPlay = () => {
+        if (audio.paused && gameState === 'READY') {
+             audio.play().catch(e => {
+                 console.log("Autoplay prevented:", e);
+                 // We will try again on document click
+             });
+        }
+    };
+
+    if (gameState === 'READY') {
+        attemptPlay();
+        // Add listener to play on interaction if autoplay blocked
+        const onInteraction = () => {
+            attemptPlay();
+            document.removeEventListener('click', onInteraction);
+            document.removeEventListener('keydown', onInteraction);
+            document.removeEventListener('touchstart', onInteraction);
+        };
+        document.addEventListener('click', onInteraction);
+        document.addEventListener('keydown', onInteraction);
+        document.addEventListener('touchstart', onInteraction);
+
+        return () => {
+             document.removeEventListener('click', onInteraction);
+             document.removeEventListener('keydown', onInteraction);
+             document.removeEventListener('touchstart', onInteraction);
+        };
+    } else {
+        if (!audio.paused || audio.currentTime > 0) {
+            audio.pause();
+            audio.currentTime = 0;
+        }
+    }
+  }, [gameState, volume]);
 
   // Helper to get stream with selected device - IMPROVED to reuse stream
   const getAudioStream = async () => {
@@ -201,16 +231,25 @@ const Game: React.FC = () => {
   };
 
   // --- Audio Cleanup ---
+  const stopBGM = useCallback(() => {
+      if (bgmSchedulerTimer.current) {
+          clearInterval(bgmSchedulerTimer.current);
+          bgmSchedulerTimer.current = null;
+      }
+  }, []);
+
   const cleanupAudio = useCallback(() => {
-    if (metronomeInterval.current) {
-      clearInterval(metronomeInterval.current);
-      metronomeInterval.current = null;
-    }
+    stopBGM();
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
-  }, []);
+    // Clean up Live Input Context if exists
+    if (liveInputAudioContextRef.current && liveInputAudioContextRef.current.state !== 'closed') {
+        liveInputAudioContextRef.current.close();
+        liveInputAudioContextRef.current = null;
+    }
+  }, [stopBGM]);
 
   const stopMicAnalysis = useCallback((keepStream = false) => {
     if (micCheckInterval.current) {
@@ -259,6 +298,11 @@ const Game: React.FC = () => {
         fetchAudioDevices();
 
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // RESUME if suspended
+        if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
+        
         micAudioCtxRef.current = audioCtx;
         
         const source = audioCtx.createMediaStreamSource(stream);
@@ -327,6 +371,8 @@ const Game: React.FC = () => {
         const stream = await getAudioStream();
 
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
         micAudioCtxRef.current = audioCtx;
         
         const source = audioCtx.createMediaStreamSource(stream);
@@ -435,12 +481,6 @@ const Game: React.FC = () => {
         sessionPromise.current.then(session => session.close());
         sessionPromise.current = null;
     }
-    
-    // Stop BGM if playing
-    if (bgmRef.current) {
-        bgmRef.current.pause();
-        bgmRef.current.currentTime = 0;
-    }
   }, [cleanupAudio, stopMicAnalysis, gameMode]);
   
   const handleTranscription = useCallback((message: LiveServerMessage) => {
@@ -451,15 +491,23 @@ const Game: React.FC = () => {
 
   const connectToGemini = useCallback(async () => {
     try {
+        // Explicitly check for API Key availability and provide clear error if missing
+        const apiKey = process.env.API_KEY;
+        if (!apiKey) {
+            throw new Error("API_KEYが設定されていません。VercelのEnvironment Variables設定でAPI_KEYを追加してください。");
+        }
+
         const stream = await getAudioStream();
         
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+        const ai = new GoogleGenAI({ apiKey: apiKey });
 
         sessionPromise.current = ai.live.connect({
             model: 'gemini-2.5-flash-native-audio-preview-09-2025',
             callbacks: {
                 onopen: () => {
                     const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+                    liveInputAudioContextRef.current = inputAudioContext;
+                    
                     const source = inputAudioContext.createMediaStreamSource(stream);
                     const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
                     
@@ -503,49 +551,168 @@ const Game: React.FC = () => {
         });
         await sessionPromise.current;
 
-    } catch (err) {
+    } catch (err: any) {
         console.error("Failed to initialize Gemini session:", err);
-        setError("AIサーバーへの接続に失敗しました。ネット環境を確認するか、時間をおいて試してください。");
+        // Show specific message if available
+        const msg = err.message || JSON.stringify(err);
+        if (msg.includes("API_KEY")) {
+             setError(msg);
+        } else {
+             setError(`AIサーバーへの接続に失敗しました: ${msg}`);
+        }
+        throw err; // Re-throw to prevent game start
     }
   }, [handleTranscription]);
   
-  const startAudio = () => {
-    // Only create context if not exists or closed
-    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    } else if (audioContextRef.current.state === 'suspended') {
-        audioContextRef.current.resume();
-    }
-    
-    const playBeat = () => {
-        if (!audioContextRef.current) return;
-        const oscillator = audioContextRef.current.createOscillator();
-        const gainNode = audioContextRef.current.createGain();
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContextRef.current.destination);
-        
-        oscillator.type = 'sine'; // Soft sine wave for cuter sound
-        oscillator.frequency.setValueAtTime(880, audioContextRef.current.currentTime);
-        
-        const vol = 0.1 * volume; 
-        gainNode.gain.setValueAtTime(vol, audioContextRef.current.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.0001, audioContextRef.current.currentTime + 0.1);
-        
-        oscillator.start(audioContextRef.current.currentTime);
-        oscillator.stop(audioContextRef.current.currentTime + 0.1);
-        
-        // --- Sync Record ---
-        lastBeatTimeRef.current = Date.now();
-    };
-    
-    // Play first beat immediately
-    playBeat();
-    if (metronomeInterval.current) clearInterval(metronomeInterval.current);
-    metronomeInterval.current = window.setInterval(playBeat, BEAT_INTERVAL_MS);
+  // --- SYNTHESIZED AUDIO & BGM ---
+  
+  // Helper to create noise buffer for Hi-hats
+  const createNoiseBuffer = (ctx: AudioContext) => {
+      const bufferSize = ctx.sampleRate * 1.0; // 1 sec buffer
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+      }
+      return buffer;
+  };
+  const noiseBufferRef = useRef<AudioBuffer | null>(null);
+
+  const startBGM = () => {
+      if (!audioContextRef.current) return;
+      const ctx = audioContextRef.current;
+      
+      // Ensure context is running
+      if (ctx.state === 'suspended') ctx.resume();
+      
+      // Initialize Noise Buffer if needed
+      if (!noiseBufferRef.current) {
+          noiseBufferRef.current = createNoiseBuffer(ctx);
+      }
+
+      // Start scheduling slightly in the future
+      bgmNextNoteTime.current = ctx.currentTime + 0.1;
+      
+      if (bgmSchedulerTimer.current) clearInterval(bgmSchedulerTimer.current);
+      
+      bgmSchedulerTimer.current = window.setInterval(() => {
+          const lookahead = 0.1; // How far ahead to schedule
+          while (bgmNextNoteTime.current < ctx.currentTime + lookahead) {
+              scheduleMeasure(ctx, bgmNextNoteTime.current);
+              bgmNextNoteTime.current += (60 / BPM) * 4; // Advance by 1 measure (4 beats)
+          }
+          
+          // Sync Record for Beat Detection logic
+          const beatDuration = 60 / BPM;
+          // Approximate current beat time for game logic
+          const timeSinceStart = ctx.currentTime - (bgmNextNoteTime.current - (60 / BPM) * 4);
+          const currentBeatIndex = Math.floor(timeSinceStart / beatDuration);
+          const currentBeatTime = (bgmNextNoteTime.current - (60 / BPM) * 4) + currentBeatIndex * beatDuration;
+          
+          // Note: This is a bit loose sync for React logic, but fine for 100ms window
+          // We update lastBeatTimeRef based on actual time
+          lastBeatTimeRef.current = Date.now(); 
+
+      }, 25);
+  };
+
+  const scheduleMeasure = (ctx: AudioContext, startBeatTime: number) => {
+      const beatDur = 60 / BPM;
+      const masterVol = volume * 0.4; // Scale overall BGM volume
+
+      for (let i = 0; i < 4; i++) {
+          const beatTime = startBeatTime + i * beatDur;
+          
+          // KICK (Every beat 1, 2, 3, 4)
+          const kOsc = ctx.createOscillator();
+          const kGain = ctx.createGain();
+          kOsc.frequency.setValueAtTime(150, beatTime);
+          kOsc.frequency.exponentialRampToValueAtTime(0.01, beatTime + 0.5);
+          kGain.gain.setValueAtTime(1.0 * masterVol, beatTime);
+          kGain.gain.exponentialRampToValueAtTime(0.001, beatTime + 0.5);
+          kOsc.connect(kGain);
+          kGain.connect(ctx.destination);
+          kOsc.start(beatTime);
+          kOsc.stop(beatTime + 0.5);
+
+          // HI-HAT (8th notes)
+          // On Beat
+          playHiHat(ctx, beatTime, masterVol);
+          // Off Beat
+          playHiHat(ctx, beatTime + beatDur/2, masterVol);
+          
+          // BASS (Offbeat)
+          const bOsc = ctx.createOscillator();
+          const bGain = ctx.createGain();
+          bOsc.type = 'sawtooth';
+          bOsc.frequency.setValueAtTime(110, beatTime + beatDur/2); // A2
+          bOsc.connect(bGain);
+          bGain.connect(ctx.destination);
+          bGain.gain.setValueAtTime(0.3 * masterVol, beatTime + beatDur/2);
+          bGain.gain.exponentialRampToValueAtTime(0.001, beatTime + beatDur);
+          bOsc.start(beatTime + beatDur/2);
+          bOsc.stop(beatTime + beatDur);
+      }
+  };
+
+  const playHiHat = (ctx: AudioContext, time: number, masterVol: number) => {
+      if (!noiseBufferRef.current) return;
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBufferRef.current;
+      const gain = ctx.createGain();
+      // High pass filter for crisp sound
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.value = 7000;
+
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      
+      gain.gain.setValueAtTime(0.3 * masterVol, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+      
+      src.start(time);
+      src.stop(time + 0.05);
+  };
+
+  const playCountdownSound = (count: number) => {
+      if (!audioContextRef.current) return;
+      const ctx = audioContextRef.current;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      const now = ctx.currentTime;
+      const beepVol = volume * 0.6; 
+
+      if (count > 0) {
+          // "Blip"
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, now);
+          gain.gain.setValueAtTime(beepVol, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+          osc.start(now);
+          osc.stop(now + 0.1);
+      } else {
+          // "Go" (High Pitch Slide)
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(1200, now);
+          osc.frequency.linearRampToValueAtTime(1800, now + 0.1);
+          gain.gain.setValueAtTime(beepVol * 0.8, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+          osc.start(now);
+          osc.stop(now + 0.4);
+      }
   };
   
   useEffect(() => {
     if (gameState === 'COUNTDOWN') {
+      playCountdownSound(countdown);
+
       if (countdown > 0) {
         const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
         return () => clearTimeout(timer);
@@ -566,14 +733,13 @@ const Game: React.FC = () => {
           pauseStartTimeRef.current = 0;
       }
       
-      startAudio();
-      // Start BGM
-      if (bgmRef.current) {
-          bgmRef.current.play().catch(e => console.warn("BGM autoplay prevented", e));
+      // Start BGM & Audio
+      if (audioContextRef.current?.state === 'suspended') {
+          audioContextRef.current.resume();
       }
+      startBGM();
       startGameAudioAnalysis(); 
       
-      // Clear existing timer if any (just in case)
       if (gameTimer.current) clearInterval(gameTimer.current);
       
       gameTimer.current = window.setInterval(() => {
@@ -592,40 +758,25 @@ const Game: React.FC = () => {
        isGameActiveRef.current = false;
        pauseStartTimeRef.current = Date.now();
        
-       // Pause BGM but do not reset time
-       if (bgmRef.current) {
-           bgmRef.current.pause();
-       }
-       // Stop Timer
+       stopBGM();
+       
        if (gameTimer.current) {
            clearInterval(gameTimer.current);
            gameTimer.current = null;
        }
        
-       // Stop Metronome
-       if (metronomeInterval.current) {
-           clearInterval(metronomeInterval.current);
-           metronomeInterval.current = null;
-       }
-       
-       // Stop Audio Analysis Loop but KEEP STREAM alive for Gemini
-       // We do not close audioContextRef here to allow fast resume
        stopMicAnalysis(true); // keepStream=true
        
     } else {
       // READY / FINISHED
       isGameActiveRef.current = false;
-      // Pause BGM and reset
-      if (bgmRef.current) {
-          bgmRef.current.pause();
-          bgmRef.current.currentTime = 0;
-      }
+      stopBGM();
       cleanupAudio();
       stopMicAnalysis(false); // stop stream
     }
     
     return () => {
-        // Cleanup on unmount or strict state change only if needed
+        // Cleanup on unmount handled by other effects
     };
   }, [gameState]);
 
@@ -656,39 +807,43 @@ const Game: React.FC = () => {
       if(sessionPromise.current) {
           sessionPromise.current.then(session => session.close());
       }
-      // Revoke BGM blob if exists
-      if (bgmSource.startsWith('blob:')) {
-          URL.revokeObjectURL(bgmSource);
+      // Stop Menu BGM
+      if (menuBgmRef.current) {
+          menuBgmRef.current.pause();
       }
     };
-  }, [cleanupAudio, stopMicAnalysis, bgmSource]);
+  }, [cleanupAudio, stopMicAnalysis]);
 
   const handleStart = async () => {
-    // 1. Reset Game State first (which might clean up old contexts)
-    resetGame();
-
-    // 2. UNLOCK BGM: Play silence/briefly
-    if (bgmRef.current) {
-        try {
-            // Play then immediately pause to unlock the element for future programmatic use
-            bgmRef.current.play().then(() => {
-                bgmRef.current?.pause();
-                bgmRef.current!.currentTime = 0;
-            }).catch(e => console.warn("BGM Unlock failed (normal if already unlocked):", e));
-        } catch(e) { console.warn("BGM access error", e); }
-    }
-
-    // 3. UNLOCK AUDIO CONTEXT: Create or resume immediately on user gesture
+    // 1. Audio Context Init (Must be first for User Gesture)
     if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
+    // Always ensure resumed
     if (audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume();
+        try {
+            await audioContextRef.current.resume();
+        } catch (e) {
+            console.warn("AudioContext resume failed:", e);
+        }
+    }
+    
+    // Attempt to resume/play menu BGM if it was blocked, just to be sure context is live
+    if (menuBgmRef.current) {
+        menuBgmRef.current.pause(); // Pause menu bgm before starting game
     }
 
-    // 4. Connect to API and Start Countdown
-    connectToGemini(); 
-    setGameState('COUNTDOWN');
+    resetGame();
+    
+    // 2. Connect to API and THEN Start Countdown
+    // Awaiting here ensures that audio context is active and permissions granted before game starts
+    try {
+        await connectToGemini();
+        setGameState('COUNTDOWN');
+    } catch (e) {
+        // Error is handled in connectToGemini/setError
+        console.error("Aborting start due to connection failure");
+    }
   };
 
   const handlePlayAgain = () => {
@@ -772,7 +927,7 @@ const Game: React.FC = () => {
               className={`w-64 h-64 rounded-full border-8 border-white flex items-center justify-center bg-pink-200/30 backdrop-blur-sm transition-transform duration-75 ${isHitAnimating ? 'scale-110' : 'scale-100'}`}
             >
                 <div className={`w-48 h-48 bg-gradient-to-b from-pink-400 to-pink-500 rounded-full flex items-center justify-center shadow-[0_8px_0_rgba(219,39,119,0.2)] border-4 border-white transition-all duration-75 ${isHitAnimating ? 'brightness-110' : ''}`}>
-                     <span className="text-6xl font-black text-white drop-shadow-md select-none">な！</span>
+                     <span className="text-6xl font-black text-white drop-shadow-md select-none">な</span>
                 </div>
             </div>
         </div>
@@ -821,39 +976,43 @@ const Game: React.FC = () => {
     switch(gameState) {
       case 'READY':
         return (
-          <div className="w-full max-w-5xl flex flex-col items-center justify-center p-4 relative z-10">
-            {/* Title Section */}
-            <div className="relative mb-8 md:mb-12 flex flex-col items-center text-center z-20">
+          // Scroll container with custom scrollbar
+          <div className="w-full h-full overflow-y-auto overflow-x-hidden relative z-10 scrollbar-thin scrollbar-thumb-pink-200 scrollbar-track-transparent">
+            {/* Flex container that grows with content but centers if space allows */}
+            <div className="min-h-full flex flex-col items-center justify-center p-4 py-8 md:py-4">
+            
+            {/* Title Section - Reduced margins */}
+            <div className="relative mb-6 md:mb-8 flex flex-col items-center text-center z-20">
                 {/* Subtitle Top */}
-                <div className="mb-2 bg-yellow-300 text-slate-800 px-6 py-2 rounded-full font-black text-lg md:text-xl border-4 border-white shadow-md transform -rotate-2">
+                <div className="mb-2 bg-yellow-300 text-slate-800 px-4 py-1 rounded-full font-black text-xs md:text-sm border-2 md:border-4 border-white shadow-md transform -rotate-2">
                     底辺チューバーからの脱却
                 </div>
                 
-                {/* Main Title Logo Group */}
-                <div className="flex flex-col items-center transform -rotate-1 hover:scale-105 transition-transform duration-300 cursor-default py-4">
-                    {/* Line 1 */}
-                    <div className="flex items-end justify-center flex-wrap gap-x-2 md:gap-x-4">
-                        <span className="text-[7rem] md:text-[9rem] font-black text-pink-500 leading-none drop-shadow-xl" 
-                              style={{ WebkitTextStroke: '4px white', paintOrder: 'stroke fill' }}>
+                {/* Main Title Logo Group - Reduced scaling */}
+                <div className="flex flex-col items-center transform -rotate-1 hover:scale-105 transition-transform duration-300 cursor-default py-2">
+                    {/* Line 1 - Compacted */}
+                    <div className="flex items-end justify-center flex-wrap gap-x-2">
+                        <span className="text-6xl sm:text-8xl md:text-[8rem] font-black text-pink-500 leading-none drop-shadow-xl" 
+                              style={{ WebkitTextStroke: '3px white', paintOrder: 'stroke fill' }}>
                             名
                         </span>
-                        <span className="text-4xl md:text-5xl font-black text-slate-800 leading-none"
+                        <span className="text-2xl sm:text-4xl md:text-4xl font-black text-slate-800 leading-none"
                               style={{ WebkitTextStroke: '2px white', paintOrder: 'stroke fill' }}>
                             を
                         </span>
-                        <span className="text-6xl md:text-7xl font-black text-slate-800 leading-none"
+                        <span className="text-4xl sm:text-6xl md:text-6xl font-black text-slate-800 leading-none"
                               style={{ WebkitTextStroke: '2.5px white', paintOrder: 'stroke fill' }}>
                             たくさん
                         </span>
-                        <span className="text-5xl md:text-6xl font-black text-slate-800 leading-none"
+                        <span className="text-3xl sm:text-5xl md:text-5xl font-black text-slate-800 leading-none"
                           style={{ WebkitTextStroke: '2px white', paintOrder: 'stroke fill' }}>
                             伝えれる
                         </span>
                     </div>
                     
                     {/* Line 2 */}
-                    <div className="flex items-baseline justify-center mt-2">
-                        <span className="text-7xl md:text-8xl font-black text-slate-800"
+                    <div className="flex items-baseline justify-center mt-1">
+                        <span className="text-3xl sm:text-5xl md:text-7xl font-black text-slate-800"
                               style={{ WebkitTextStroke: '3px white', paintOrder: 'stroke fill' }}>
                             画期的ツール
                         </span>
@@ -861,29 +1020,29 @@ const Game: React.FC = () => {
                 </div>
 
                 {/* Subtitle Bottom */}
-                <div className="text-slate-400 text-sm md:text-base font-bold mt-4 tracking-widest bg-white/50 px-4 py-1 rounded-full">
+                <div className="text-slate-400 text-[10px] md:text-xs font-bold mt-2 tracking-widest bg-white/50 px-3 py-1 rounded-full">
                     的なもの
                 </div>
             </div>
 
-            <div className="flex flex-col md:flex-row gap-8 w-full items-stretch justify-center">
+            <div className="flex flex-col lg:flex-row gap-4 w-full max-w-4xl items-stretch justify-center">
                 {/* LEFT: Start & Mode Selection */}
-                <div className="flex-1 flex flex-col gap-6 min-h-[350px]">
-                     {/* Mode Selectors */}
-                     <div className="bg-white/80 backdrop-blur rounded-3xl p-4 shadow-[0_4px_0_rgba(0,0,0,0.1)] flex flex-col gap-2 border-4 border-white">
-                         <div className="text-cyan-500 font-bold text-center mb-2">モードをえらんでね</div>
+                <div className="flex-1 flex flex-col gap-4 order-1">
+                     {/* Mode Selectors - Compact */}
+                     <div className="bg-white/80 backdrop-blur rounded-2xl p-3 shadow-[0_4px_0_rgba(0,0,0,0.1)] flex flex-col gap-2 border-4 border-white">
+                         <div className="text-cyan-500 font-bold text-center text-sm mb-1">モードをえらんでね</div>
                          <div className="flex gap-2">
                             {(Object.keys(MODE_DURATIONS) as GameMode[]).map((mode) => (
                                 <button
                                     key={mode}
                                     onClick={() => setGameMode(mode)}
-                                    className={`flex-1 py-3 font-bold text-lg rounded-2xl transition-all transform ${
+                                    className={`flex-1 py-2 font-bold text-xs md:text-base rounded-xl transition-all transform ${
                                         gameMode === mode 
-                                        ? 'bg-yellow-300 text-slate-800 shadow-[0_4px_0_#d97706] translate-y-[-2px]' 
+                                        ? 'bg-yellow-300 text-slate-800 shadow-[0_3px_0_#d97706] translate-y-[-1px]' 
                                         : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
                                     }`}
                                 >
-                                    {mode === 'FULL' ? 'フル（73びょう）' : mode === '10s' ? '10びょう' : '30びょう'}
+                                    {mode === 'FULL' ? 'フル (72秒)' : mode === '10s' ? '10秒' : '30秒'}
                                 </button>
                             ))}
                          </div>
@@ -891,7 +1050,7 @@ const Game: React.FC = () => {
 
                      <button 
                         onClick={handleStart} 
-                        className="group relative flex-1 w-full focus:outline-none transform transition-all hover:scale-[1.02] active:scale-95 duration-200"
+                        className="group relative flex-1 w-full focus:outline-none transform transition-all hover:scale-[1.02] active:scale-95 duration-200 min-h-[100px] md:min-h-[160px]"
                     >
                         <div className="absolute inset-0 bg-pink-300 rounded-[2rem] transform translate-y-2"></div>
                         <div className="absolute inset-0 bg-gradient-to-b from-pink-400 to-pink-500 rounded-[2rem] border-4 border-white shadow-inner flex flex-col items-center justify-center overflow-hidden">
@@ -899,10 +1058,10 @@ const Game: React.FC = () => {
                             <div className="absolute top-[-20%] left-[-10%] w-32 h-32 bg-white/20 rotate-45 transform"></div>
                             <div className="absolute bottom-[-20%] right-[-10%] w-32 h-32 bg-white/20 rotate-12 transform"></div>
                             
-                            <span className="text-5xl font-black text-white drop-shadow-md z-10">始める！</span>
-                            <div className="bg-white/30 rounded-full px-6 py-2 mt-6 z-10">
-                                <span className="text-2xl font-bold text-white">
-                                    {gameMode === 'FULL' ? '73秒名を伝える' : gameMode === '10s' ? '10秒名を伝える' : '30秒名を伝える'}
+                            <span className="text-4xl md:text-5xl font-black text-white drop-shadow-md z-10">始める！</span>
+                            <div className="bg-white/30 rounded-full px-6 py-2 mt-4 md:mt-6 z-10">
+                                <span className="text-lg md:text-2xl font-bold text-white">
+                                    {gameMode === 'FULL' ? '72秒名を伝える' : gameMode === '10s' ? '10秒名を伝える' : '30秒名を伝える'}
                                 </span>
                             </div>
                         </div>
@@ -910,17 +1069,17 @@ const Game: React.FC = () => {
                 </div>
 
                 {/* RIGHT: Settings Panel */}
-                <div className="flex-1">
-                     <div className="h-full bg-sky-200/90 backdrop-blur rounded-[2.5rem] border-8 border-white p-6 text-slate-700 flex flex-col justify-between shadow-lg relative overflow-hidden">
+                <div className="flex-1 order-2">
+                     <div className="h-full bg-sky-200/90 backdrop-blur rounded-[2rem] border-4 md:border-8 border-white p-4 text-slate-700 flex flex-col justify-center gap-4 shadow-lg relative overflow-hidden">
                          <div className="absolute top-[-20px] left-[-20px] w-20 h-20 bg-sky-300 rounded-full opacity-50"></div>
                          
-                         <div className="bg-white text-sky-500 font-black px-6 py-2 rounded-full inline-block self-center mb-4 shadow-sm text-xl border-2 border-sky-100">
+                         <div className="bg-white text-sky-500 font-black px-4 py-1 rounded-full inline-block self-center mb-2 shadow-sm text-lg border-2 border-sky-100">
                              ⚙️ せってい
                          </div>
 
                          {/* Volume Setting */}
-                         <div className="mb-4 bg-white/50 p-4 rounded-2xl">
-                             <div className="flex justify-between mb-2 font-bold text-sky-600">
+                         <div className="bg-white/50 p-3 rounded-xl">
+                             <div className="flex justify-between mb-1 font-bold text-sky-600 text-sm">
                                  <span>🔊 おんりょう</span>
                                  <span>{Math.round(volume * 100)}%</span>
                              </div>
@@ -933,34 +1092,22 @@ const Game: React.FC = () => {
                              />
                          </div>
 
-                         {/* BGM Selection - FIX for missing file */}
-                         <div className="mb-4 bg-white/50 p-4 rounded-2xl">
-                             <div className="font-bold text-sky-600 mb-2">📁 BGMをえらぶ</div>
-                             <input 
-                                 type="file" 
-                                 accept="audio/*"
-                                 onChange={handleBgmSelect}
-                                 className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100 cursor-pointer"
-                             />
-                             <div className="text-xs text-slate-400 mt-1">※BGMが再生されない場合は、ここでファイルを選択してください。</div>
-                         </div>
-
                          {/* Mic Test Section */}
-                         <div className="bg-white/60 p-4 rounded-2xl flex-1 flex flex-col justify-center border-2 border-white">
-                             <div className="flex justify-between items-center mb-3">
-                                 <span className="font-bold text-sky-600">🎤 マイクテスト</span>
+                         <div className="bg-white/60 p-3 rounded-xl flex-1 flex flex-col justify-center border-2 border-white gap-2">
+                             <div className="flex justify-between items-center">
+                                 <span className="font-bold text-sky-600 text-sm">🎤 マイクテスト</span>
                                  <button 
                                     onClick={toggleMicTest}
-                                    className={`px-4 py-1 text-sm font-bold rounded-full border-2 transition-colors ${isMicTesting ? 'bg-green-400 text-white border-green-200' : 'bg-white text-gray-400 border-gray-200'}`}
+                                    className={`px-3 py-1 text-xs font-bold rounded-full border-2 transition-colors ${isMicTesting ? 'bg-green-400 text-white border-green-200' : 'bg-white text-gray-400 border-gray-200'}`}
                                  >
                                      {isMicTesting ? 'ON' : 'OFF'}
                                  </button>
                              </div>
 
                              {/* Mic Selector */}
-                             <div className="mb-3">
+                             <div>
                                  <select 
-                                     className="w-full text-sm p-2 rounded-lg border-2 border-sky-200 text-slate-600 bg-white focus:outline-none focus:border-sky-400"
+                                     className="w-full text-xs p-2 rounded-lg border-2 border-sky-200 text-slate-600 bg-white focus:outline-none focus:border-sky-400 max-w-full truncate"
                                      value={selectedDeviceId}
                                      onChange={(e) => setSelectedDeviceId(e.target.value)}
                                  >
@@ -974,7 +1121,7 @@ const Game: React.FC = () => {
                              </div>
 
                              {/* Visualizer & Threshold */}
-                             <div className="relative h-10 bg-gray-200 rounded-full border-4 border-white mb-3 overflow-hidden shadow-inner">
+                             <div className="relative h-8 bg-gray-200 rounded-full border-4 border-white overflow-hidden shadow-inner">
                                  <div 
                                     className="absolute top-0 bottom-0 w-1 bg-yellow-400 z-20"
                                     style={{ left: `${micThreshold}%` }}
@@ -986,7 +1133,7 @@ const Game: React.FC = () => {
                              </div>
 
                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-slate-500 font-bold">📶 はんのうライン</span>
+                                <span className="text-[10px] text-slate-500 font-bold whitespace-nowrap">はんのうライン</span>
                                 <input 
                                     type="range" 
                                     min="0" max="100" 
@@ -1000,7 +1147,9 @@ const Game: React.FC = () => {
                 </div>
             </div>
             
-            {error && <div className="mt-8 bg-red-400 text-white font-bold p-4 rounded-xl border-4 border-white animate-bounce shadow-lg max-w-lg text-center">{error}</div>}
+            {error && <div className="mt-4 bg-red-400 text-white font-bold p-3 rounded-xl border-4 border-white animate-bounce shadow-lg max-w-lg text-center text-sm break-all">{error}</div>}
+            
+            </div>
           </div>
         );
       case 'COUNTDOWN':
@@ -1105,21 +1254,6 @@ const Game: React.FC = () => {
 
   return (
     <div className="w-full h-screen flex items-center justify-center relative overflow-hidden bg-polka font-sans selection:bg-pink-200 selection:text-pink-900">
-        <audio 
-            ref={bgmRef} 
-            loop 
-            preload="auto"
-            src={bgmSource}
-            onCanPlay={() => {
-                if(bgmRef.current) bgmRef.current.volume = volume;
-                setError(null); // Clear errors if audio loads successfully
-            }}
-            onError={(e) => {
-                console.warn("BGM Load Error:", e);
-                // Don't show critical error immediately for default path, user might not have set it.
-                // Just let them know via the text under the file input.
-            }}
-        />
         <Crowd progress={Math.min(score / CLEAR_THRESHOLDS[gameMode], 1)} />
         {fallingNas.map(na => <FallingNaComponent key={na.id} na={na} />)}
         {renderContent()}
