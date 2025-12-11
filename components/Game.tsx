@@ -65,8 +65,9 @@ const Game: React.FC = () => {
   const [isHitAnimating, setIsHitAnimating] = useState(false);
 
   // Settings State
+  // Default path changed to relative (no leading slash) to support sub-directory deployments
   const [volume, setVolume] = useState(0.5);
-  const [bgmSource, setBgmSource] = useState<string>('/bgm/bgm.mp3');
+  const [bgmSource, setBgmSource] = useState<string>('bgm/bgm.mp3');
   const [micThreshold, setMicThreshold] = useState(30); // 0-100 visual scale
   const [inputLevel, setInputLevel] = useState(0);
   const [isMicTesting, setIsMicTesting] = useState(false);
@@ -572,11 +573,30 @@ const Game: React.FC = () => {
   }, [gameState, countdown]);
 
   useEffect(() => {
-    // Menu BGM Logic
+    // Menu BGM Logic: Autoplay is often blocked, so we add an interaction listener
     if (gameState === 'READY') {
+        const playMusic = () => {
+            if (menuBgmRef.current && menuBgmRef.current.paused) {
+                menuBgmRef.current.play().catch(() => {
+                    // Still blocked? keep listener
+                });
+            }
+        };
+
         if (menuBgmRef.current) {
-            menuBgmRef.current.play().catch(() => {});
+            menuBgmRef.current.play().catch(() => {
+                // Autoplay blocked, wait for first user interaction
+                window.addEventListener('click', playMusic, { once: true });
+                window.addEventListener('touchstart', playMusic, { once: true });
+                window.addEventListener('keydown', playMusic, { once: true });
+            });
         }
+        
+        return () => {
+            window.removeEventListener('click', playMusic);
+            window.removeEventListener('touchstart', playMusic);
+            window.removeEventListener('keydown', playMusic);
+        };
     } else {
         // Stop Menu BGM for all other states
         if (menuBgmRef.current) {
@@ -1158,7 +1178,7 @@ const Game: React.FC = () => {
             ref={menuBgmRef} 
             loop 
             preload="auto"
-            src="/bgm/top.mp3"
+            src="bgm/top.mp3"
             onError={() => console.warn("Menu BGM not found")}
         />
         <Crowd progress={Math.min(score / CLEAR_THRESHOLDS[gameMode], 1)} />
