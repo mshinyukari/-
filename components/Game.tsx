@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, Modality } from "@google/genai";
 import type { LiveServerMessage } from "@google/genai";
 import { GameState, FallingNa, GameMode, ScoreEntry } from '../types';
-import { MODE_DURATIONS, BEAT_INTERVAL_MS, COUNTDOWN_SECONDS } from '../constants';
+import { MODE_DURATIONS, BEAT_INTERVAL_MS, COUNTDOWN_SECONDS, BPM } from '../constants';
 import { encode } from '../utils/audioUtils';
 import FallingNaComponent from './FallingNa';
 
@@ -66,8 +66,6 @@ const Game: React.FC = () => {
 
   // Settings State
   const [volume, setVolume] = useState(0.5);
-  // Default to public folder path, will fallback if fails
-  const [bgmSource, setBgmSource] = useState<string>('/bgm.mp3');
   const [micThreshold, setMicThreshold] = useState(30); // 0-100 visual scale
   const [inputLevel, setInputLevel] = useState(0);
   const [isMicTesting, setIsMicTesting] = useState(false);
@@ -79,9 +77,7 @@ const Game: React.FC = () => {
   const sessionPromise = useRef<Promise<any> | null>(null);
   const lastTranscription = useRef('');
   const audioContextRef = useRef<AudioContext | null>(null);
-  const metronomeInterval = useRef<number | null>(null);
   const gameTimer = useRef<number | null>(null);
-  const bgmRef = useRef<HTMLAudioElement>(null);
   
   // Refs for Mic Test & Game Audio Analysis
   const streamRef = useRef<MediaStream | null>(null);
@@ -102,12 +98,10 @@ const Game: React.FC = () => {
   const startTimeRef = useRef<number>(0); // To calculate elapsed time for inflation
   const pauseStartTimeRef = useRef<number>(0); // To adjust startTimeRef after pause
 
-  // Sync BGM Volume
-  useEffect(() => {
-      if (bgmRef.current) {
-          bgmRef.current.volume = volume;
-      }
-  }, [volume]);
+  // BGM Refs
+  const bgmNextNoteTime = useRef(0);
+  const bgmSchedulerTimer = useRef<number | null>(null);
+  const menuBgmRef = useRef<HTMLAudioElement | null>(null);
 
   // --- Device Management ---
   const fetchAudioDevices = useCallback(async () => {
@@ -134,6 +128,44 @@ const Game: React.FC = () => {
     navigator.mediaDevices.addEventListener('devicechange', fetchAudioDevices);
     return () => navigator.mediaDevices.removeEventListener('devicechange', fetchAudioDevices);
   }, [fetchAudioDevices]);
+
+  // Handle Menu BGM
+  useEffect(() => {
+    if (!menuBgmRef.current) {
+        menuBgmRef.current = new Audio('/top.mp3');
+        menuBgmRef.current.loop = true;
+    }
+    const audio = menuBgmRef.current;
+    
+    // Safety check for valid volume
+    const safeVolume = Math.max(0, Math.min(1, volume));
+    audio.volume = safeVolume * 0.6; // Slightly quieter than SFX
+
+    if (gameState === 'READY') {
+        if (audio.paused) {
+             const playPromise = audio.play();
+             if (playPromise !== undefined) {
+                 playPromise.catch(() => {
+                     // Auto-play blocked, wait for interaction
+                     const resume = () => {
+                         if (audio.paused) audio.play().catch(() => {});
+                         document.removeEventListener('click', resume);
+                         document.removeEventListener('keydown', resume);
+                         document.removeEventListener('touchstart', resume);
+                     };
+                     document.addEventListener('click', resume);
+                     document.addEventListener('keydown', resume);
+                     document.addEventListener('touchstart', resume);
+                 });
+             }
+        }
+    } else {
+        if (!audio.paused || audio.currentTime > 0) {
+            audio.pause();
+            audio.currentTime = 0;
+        }
+    }
+  }, [gameState, volume]);
 
   // Helper to get stream with selected device - IMPROVED to reuse stream
   const getAudioStream = async () => {
@@ -190,11 +222,15 @@ const Game: React.FC = () => {
   };
 
   // --- Audio Cleanup ---
+  const stopBGM = useCallback(() => {
+      if (bgmSchedulerTimer.current) {
+          clearInterval(bgmSchedulerTimer.current);
+          bgmSchedulerTimer.current = null;
+      }
+  }, []);
+
   const cleanupAudio = useCallback(() => {
-    if (metronomeInterval.current) {
-      clearInterval(metronomeInterval.current);
-      metronomeInterval.current = null;
-    }
+    stopBGM();
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
       audioContextRef.current = null;
@@ -204,7 +240,7 @@ const Game: React.FC = () => {
         liveInputAudioContextRef.current.close();
         liveInputAudioContextRef.current = null;
     }
-  }, []);
+  }, [stopBGM]);
 
   const stopMicAnalysis = useCallback((keepStream = false) => {
     if (micCheckInterval.current) {
@@ -429,12 +465,6 @@ const Game: React.FC = () => {
         sessionPromise.current.then(session => session.close());
         sessionPromise.current = null;
     }
-    
-    // Stop BGM if playing
-    if (bgmRef.current) {
-        bgmRef.current.pause();
-        bgmRef.current.currentTime = 0;
-    }
   }, [cleanupAudio, stopMicAnalysis, gameMode]);
   
   const handleTranscription = useCallback((message: LiveServerMessage) => {
@@ -506,40 +536,126 @@ const Game: React.FC = () => {
     } catch (err) {
         console.error("Failed to initialize Gemini session:", err);
         setError("AIサーバーへの接続に失敗しました。ネット環境を確認するか、時間をおいて試してください。");
+        throw err; // Re-throw to prevent game start
     }
   }, [handleTranscription]);
   
-  const startAudio = () => {
-    // Only create context if not exists or closed
-    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    } else if (audioContextRef.current.state === 'suspended') {
-        audioContextRef.current.resume();
-    }
-    
-    const playBeat = () => {
-        if (!audioContextRef.current) return;
-        
-        // --- Sync Record ---
-        lastBeatTimeRef.current = Date.now();
-    };
-    
-    // Play first beat immediately
-    playBeat();
-    if (metronomeInterval.current) clearInterval(metronomeInterval.current);
-    metronomeInterval.current = window.setInterval(playBeat, BEAT_INTERVAL_MS);
+  // --- SYNTHESIZED AUDIO & BGM ---
+  
+  // Helper to create noise buffer for Hi-hats
+  const createNoiseBuffer = (ctx: AudioContext) => {
+      const bufferSize = ctx.sampleRate * 1.0; // 1 sec buffer
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+      }
+      return buffer;
+  };
+  const noiseBufferRef = useRef<AudioBuffer | null>(null);
+
+  const startBGM = () => {
+      if (!audioContextRef.current) return;
+      const ctx = audioContextRef.current;
+      
+      // Ensure context is running
+      if (ctx.state === 'suspended') ctx.resume();
+      
+      // Initialize Noise Buffer if needed
+      if (!noiseBufferRef.current) {
+          noiseBufferRef.current = createNoiseBuffer(ctx);
+      }
+
+      // Start scheduling slightly in the future
+      bgmNextNoteTime.current = ctx.currentTime + 0.1;
+      
+      if (bgmSchedulerTimer.current) clearInterval(bgmSchedulerTimer.current);
+      
+      bgmSchedulerTimer.current = window.setInterval(() => {
+          const lookahead = 0.1; // How far ahead to schedule
+          while (bgmNextNoteTime.current < ctx.currentTime + lookahead) {
+              scheduleMeasure(ctx, bgmNextNoteTime.current);
+              bgmNextNoteTime.current += (60 / BPM) * 4; // Advance by 1 measure (4 beats)
+          }
+          
+          // Sync Record for Beat Detection logic
+          const beatDuration = 60 / BPM;
+          // Approximate current beat time for game logic
+          const timeSinceStart = ctx.currentTime - (bgmNextNoteTime.current - (60 / BPM) * 4);
+          const currentBeatIndex = Math.floor(timeSinceStart / beatDuration);
+          const currentBeatTime = (bgmNextNoteTime.current - (60 / BPM) * 4) + currentBeatIndex * beatDuration;
+          
+          // Note: This is a bit loose sync for React logic, but fine for 100ms window
+          // We update lastBeatTimeRef based on actual time
+          lastBeatTimeRef.current = Date.now(); 
+
+      }, 25);
+  };
+
+  const scheduleMeasure = (ctx: AudioContext, startBeatTime: number) => {
+      const beatDur = 60 / BPM;
+      const masterVol = volume * 0.4; // Scale overall BGM volume
+
+      for (let i = 0; i < 4; i++) {
+          const beatTime = startBeatTime + i * beatDur;
+          
+          // KICK (Every beat 1, 2, 3, 4)
+          const kOsc = ctx.createOscillator();
+          const kGain = ctx.createGain();
+          kOsc.frequency.setValueAtTime(150, beatTime);
+          kOsc.frequency.exponentialRampToValueAtTime(0.01, beatTime + 0.5);
+          kGain.gain.setValueAtTime(1.0 * masterVol, beatTime);
+          kGain.gain.exponentialRampToValueAtTime(0.001, beatTime + 0.5);
+          kOsc.connect(kGain);
+          kGain.connect(ctx.destination);
+          kOsc.start(beatTime);
+          kOsc.stop(beatTime + 0.5);
+
+          // HI-HAT (8th notes)
+          // On Beat
+          playHiHat(ctx, beatTime, masterVol);
+          // Off Beat
+          playHiHat(ctx, beatTime + beatDur/2, masterVol);
+          
+          // BASS (Offbeat)
+          const bOsc = ctx.createOscillator();
+          const bGain = ctx.createGain();
+          bOsc.type = 'sawtooth';
+          bOsc.frequency.setValueAtTime(110, beatTime + beatDur/2); // A2
+          bOsc.connect(bGain);
+          bGain.connect(ctx.destination);
+          bGain.gain.setValueAtTime(0.3 * masterVol, beatTime + beatDur/2);
+          bGain.gain.exponentialRampToValueAtTime(0.001, beatTime + beatDur);
+          bOsc.start(beatTime + beatDur/2);
+          bOsc.stop(beatTime + beatDur);
+      }
+  };
+
+  const playHiHat = (ctx: AudioContext, time: number, masterVol: number) => {
+      if (!noiseBufferRef.current) return;
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBufferRef.current;
+      const gain = ctx.createGain();
+      // High pass filter for crisp sound
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.value = 7000;
+
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      
+      gain.gain.setValueAtTime(0.3 * masterVol, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+      
+      src.start(time);
+      src.stop(time + 0.05);
   };
 
   const playCountdownSound = (count: number) => {
-      // Ensure context exists
       if (!audioContextRef.current) return;
-      
-      // Ensure context is running. If suspended (often happens before user interaction), try to resume.
-      // Note: We also resume in handleStart, but this is a failsafe.
       const ctx = audioContextRef.current;
-      if (ctx.state === 'suspended') {
-          ctx.resume().catch(() => {});
-      }
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
 
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -547,11 +663,10 @@ const Game: React.FC = () => {
       gain.connect(ctx.destination);
       
       const now = ctx.currentTime;
-      // Scale volume slightly down for beep so it's not piercing
-      const beepVol = volume * 0.5;
+      const beepVol = volume * 0.6; 
 
       if (count > 0) {
-          // "Blip" sound (High tick)
+          // "Blip"
           osc.type = 'sine';
           osc.frequency.setValueAtTime(880, now);
           gain.gain.setValueAtTime(beepVol, now);
@@ -559,11 +674,11 @@ const Game: React.FC = () => {
           osc.start(now);
           osc.stop(now + 0.1);
       } else {
-          // "Go" sound (Higher, brighter)
-          osc.type = 'square'; // Square wave for retro game feel
+          // "Go" (High Pitch Slide)
+          osc.type = 'square';
           osc.frequency.setValueAtTime(1200, now);
-          osc.frequency.linearRampToValueAtTime(1800, now + 0.1); // Slide up
-          gain.gain.setValueAtTime(beepVol * 0.8, now); // Slightly quieter for square wave
+          osc.frequency.linearRampToValueAtTime(1800, now + 0.1);
+          gain.gain.setValueAtTime(beepVol * 0.8, now);
           gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
           osc.start(now);
           osc.stop(now + 0.4);
@@ -581,7 +696,7 @@ const Game: React.FC = () => {
         setGameState('PLAYING');
       }
     }
-  }, [gameState, countdown]); // Removed volume dependency to prevent double triggers if volume changes
+  }, [gameState, countdown]);
 
   useEffect(() => {
     if (gameState === 'PLAYING') {
@@ -594,17 +709,13 @@ const Game: React.FC = () => {
           pauseStartTimeRef.current = 0;
       }
       
-      startAudio();
-      // Start BGM
-      if (bgmRef.current) {
-          bgmRef.current.play().catch(e => {
-              console.warn("BGM autoplay prevented:", e);
-              // Retry once if needed or just log
-          });
+      // Start BGM & Audio
+      if (audioContextRef.current?.state === 'suspended') {
+          audioContextRef.current.resume();
       }
+      startBGM();
       startGameAudioAnalysis(); 
       
-      // Clear existing timer if any (just in case)
       if (gameTimer.current) clearInterval(gameTimer.current);
       
       gameTimer.current = window.setInterval(() => {
@@ -623,40 +734,25 @@ const Game: React.FC = () => {
        isGameActiveRef.current = false;
        pauseStartTimeRef.current = Date.now();
        
-       // Pause BGM but do not reset time
-       if (bgmRef.current) {
-           bgmRef.current.pause();
-       }
-       // Stop Timer
+       stopBGM();
+       
        if (gameTimer.current) {
            clearInterval(gameTimer.current);
            gameTimer.current = null;
        }
        
-       // Stop Metronome
-       if (metronomeInterval.current) {
-           clearInterval(metronomeInterval.current);
-           metronomeInterval.current = null;
-       }
-       
-       // Stop Audio Analysis Loop but KEEP STREAM alive for Gemini
-       // We do not close audioContextRef here to allow fast resume
        stopMicAnalysis(true); // keepStream=true
        
     } else {
       // READY / FINISHED
       isGameActiveRef.current = false;
-      // Pause BGM and reset
-      if (bgmRef.current) {
-          bgmRef.current.pause();
-          bgmRef.current.currentTime = 0;
-      }
+      stopBGM();
       cleanupAudio();
       stopMicAnalysis(false); // stop stream
     }
     
     return () => {
-        // Cleanup on unmount or strict state change only if needed
+        // Cleanup on unmount handled by other effects
     };
   }, [gameState]);
 
@@ -687,15 +783,19 @@ const Game: React.FC = () => {
       if(sessionPromise.current) {
           sessionPromise.current.then(session => session.close());
       }
+      // Stop Menu BGM
+      if (menuBgmRef.current) {
+          menuBgmRef.current.pause();
+      }
     };
   }, [cleanupAudio, stopMicAnalysis]);
 
   const handleStart = async () => {
     // 1. Audio Context Init (Must be first for User Gesture)
-    // Initialize or Resume AudioContext immediately on user interaction
     if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
+    // Always ensure resumed
     if (audioContextRef.current.state === 'suspended') {
         try {
             await audioContextRef.current.resume();
@@ -704,24 +804,17 @@ const Game: React.FC = () => {
         }
     }
 
-    // 2. UNLOCK BGM: Play silence/briefly
-    if (bgmRef.current) {
-        try {
-            // Play then immediately pause to unlock the element for future programmatic use
-            const playPromise = bgmRef.current.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    bgmRef.current?.pause();
-                    bgmRef.current!.currentTime = 0;
-                }).catch(e => console.warn("BGM Unlock failed (normal if already unlocked):", e));
-            }
-        } catch(e) { console.warn("BGM access error", e); }
-    }
-
     resetGame();
-    // 3. Connect to API and Start Countdown
-    connectToGemini(); 
-    setGameState('COUNTDOWN');
+    
+    // 2. Connect to API and THEN Start Countdown
+    // Awaiting here ensures that audio context is active and permissions granted before game starts
+    try {
+        await connectToGemini();
+        setGameState('COUNTDOWN');
+    } catch (e) {
+        // Error is handled in connectToGemini/setError
+        console.error("Aborting start due to connection failure");
+    }
   };
 
   const handlePlayAgain = () => {
@@ -1127,26 +1220,6 @@ const Game: React.FC = () => {
 
   return (
     <div className="w-full h-screen flex items-center justify-center relative overflow-hidden bg-polka font-sans selection:bg-pink-200 selection:text-pink-900">
-        <audio 
-            ref={bgmRef} 
-            loop 
-            preload="auto"
-            src={bgmSource}
-            onCanPlay={() => {
-                if(bgmRef.current) bgmRef.current.volume = volume;
-                setError(null); // Clear errors if audio loads successfully
-            }}
-            onError={(e) => {
-                console.info("BGM Load Error for path:", bgmSource);
-                // Auto Fallback Logic
-                if (bgmSource === '/bgm.mp3') {
-                    setBgmSource('/bgm/bgm.mp3');
-                } else if (bgmSource === '/bgm/bgm.mp3') {
-                     // Try relative path as last resort
-                     setBgmSource('bgm.mp3');
-                }
-            }}
-        />
         <Crowd progress={Math.min(score / CLEAR_THRESHOLDS[gameMode], 1)} />
         {fallingNas.map(na => <FallingNaComponent key={na.id} na={na} />)}
         {renderContent()}
