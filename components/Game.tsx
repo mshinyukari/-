@@ -141,24 +141,33 @@ const Game: React.FC = () => {
     const safeVolume = Math.max(0, Math.min(1, volume));
     audio.volume = safeVolume * 0.6; // Slightly quieter than SFX
 
-    if (gameState === 'READY') {
-        if (audio.paused) {
-             const playPromise = audio.play();
-             if (playPromise !== undefined) {
-                 playPromise.catch(() => {
-                     // Auto-play blocked, wait for interaction
-                     const resume = () => {
-                         if (audio.paused) audio.play().catch(() => {});
-                         document.removeEventListener('click', resume);
-                         document.removeEventListener('keydown', resume);
-                         document.removeEventListener('touchstart', resume);
-                     };
-                     document.addEventListener('click', resume);
-                     document.addEventListener('keydown', resume);
-                     document.addEventListener('touchstart', resume);
-                 });
-             }
+    const attemptPlay = () => {
+        if (audio.paused && gameState === 'READY') {
+             audio.play().catch(e => {
+                 console.log("Autoplay prevented:", e);
+                 // We will try again on document click
+             });
         }
+    };
+
+    if (gameState === 'READY') {
+        attemptPlay();
+        // Add listener to play on interaction if autoplay blocked
+        const onInteraction = () => {
+            attemptPlay();
+            document.removeEventListener('click', onInteraction);
+            document.removeEventListener('keydown', onInteraction);
+            document.removeEventListener('touchstart', onInteraction);
+        };
+        document.addEventListener('click', onInteraction);
+        document.addEventListener('keydown', onInteraction);
+        document.addEventListener('touchstart', onInteraction);
+
+        return () => {
+             document.removeEventListener('click', onInteraction);
+             document.removeEventListener('keydown', onInteraction);
+             document.removeEventListener('touchstart', onInteraction);
+        };
     } else {
         if (!audio.paused || audio.currentTime > 0) {
             audio.pause();
@@ -289,6 +298,11 @@ const Game: React.FC = () => {
         fetchAudioDevices();
 
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // RESUME if suspended
+        if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
+        
         micAudioCtxRef.current = audioCtx;
         
         const source = audioCtx.createMediaStreamSource(stream);
@@ -357,6 +371,8 @@ const Game: React.FC = () => {
         const stream = await getAudioStream();
 
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
         micAudioCtxRef.current = audioCtx;
         
         const source = audioCtx.createMediaStreamSource(stream);
@@ -475,13 +491,15 @@ const Game: React.FC = () => {
 
   const connectToGemini = useCallback(async () => {
     try {
-        if (!process.env.API_KEY) {
-            throw new Error("API Key not found. Please check your environment variables.");
+        // Explicitly check for API Key availability and provide clear error if missing
+        const apiKey = process.env.API_KEY;
+        if (!apiKey) {
+            throw new Error("API_KEYが設定されていません。VercelのEnvironment Variables設定でAPI_KEYを追加してください。");
         }
 
         const stream = await getAudioStream();
         
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+        const ai = new GoogleGenAI({ apiKey: apiKey });
 
         sessionPromise.current = ai.live.connect({
             model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -533,9 +551,15 @@ const Game: React.FC = () => {
         });
         await sessionPromise.current;
 
-    } catch (err) {
+    } catch (err: any) {
         console.error("Failed to initialize Gemini session:", err);
-        setError("AIサーバーへの接続に失敗しました。ネット環境を確認するか、時間をおいて試してください。");
+        // Show specific message if available
+        const msg = err.message || JSON.stringify(err);
+        if (msg.includes("API_KEY")) {
+             setError(msg);
+        } else {
+             setError(`AIサーバーへの接続に失敗しました: ${msg}`);
+        }
         throw err; // Re-throw to prevent game start
     }
   }, [handleTranscription]);
@@ -802,6 +826,11 @@ const Game: React.FC = () => {
         } catch (e) {
             console.warn("AudioContext resume failed:", e);
         }
+    }
+    
+    // Attempt to resume/play menu BGM if it was blocked, just to be sure context is live
+    if (menuBgmRef.current) {
+        menuBgmRef.current.pause(); // Pause menu bgm before starting game
     }
 
     resetGame();
@@ -1115,7 +1144,7 @@ const Game: React.FC = () => {
                 </div>
             </div>
             
-            {error && <div className="mt-8 bg-red-400 text-white font-bold p-4 rounded-xl border-4 border-white animate-bounce shadow-lg max-w-lg text-center">{error}</div>}
+            {error && <div className="mt-8 bg-red-400 text-white font-bold p-4 rounded-xl border-4 border-white animate-bounce shadow-lg max-w-lg text-center break-all">{error}</div>}
           </div>
         );
       case 'COUNTDOWN':
