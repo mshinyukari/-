@@ -108,13 +108,16 @@ const Game: React.FC = () => {
 
   // Sync BGM Volume
   useEffect(() => {
-      if (bgmRef.current) {
-          bgmRef.current.volume = volume;
+      // Only sync volume if NOT in countdown (countdown uses silent volume 0)
+      if (gameState !== 'COUNTDOWN') {
+          if (bgmRef.current) {
+              bgmRef.current.volume = volume;
+          }
       }
       if (menuBgmRef.current) {
           menuBgmRef.current.volume = volume;
       }
-  }, [volume]);
+  }, [volume, gameState]);
 
   // Handle BGM File Selection
   const handleBgmSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -589,19 +592,16 @@ const Game: React.FC = () => {
   }, [gameState, countdown]);
 
   useEffect(() => {
-    // Menu BGM Logic: Autoplay is often blocked, so we add an interaction listener
+    // Menu BGM Logic
     if (gameState === 'READY') {
         const playMusic = () => {
             if (menuBgmRef.current && menuBgmRef.current.paused) {
-                menuBgmRef.current.play().catch(() => {
-                    // Still blocked? keep listener
-                });
+                menuBgmRef.current.play().catch(() => {});
             }
         };
 
         if (menuBgmRef.current) {
             menuBgmRef.current.play().catch(() => {
-                // Autoplay blocked, wait for first user interaction
                 window.addEventListener('click', playMusic, { once: true });
                 window.addEventListener('touchstart', playMusic, { once: true });
                 window.addEventListener('keydown', playMusic, { once: true });
@@ -632,13 +632,17 @@ const Game: React.FC = () => {
       }
       
       startAudio();
-      // Start BGM
+      
+      // RESTART BGM (Warmup Complete)
+      // Reset time to 0 and restore volume
       if (bgmRef.current) {
-          bgmRef.current.play().catch(e => console.warn("BGM autoplay prevented")); // sanitized
+          bgmRef.current.currentTime = 0;
+          bgmRef.current.volume = volume; // Restore audible volume
+          bgmRef.current.play().catch(e => console.warn("BGM play failed", e));
       }
+
       startGameAudioAnalysis(); 
       
-      // Clear existing timer if any (just in case)
       if (gameTimer.current) clearInterval(gameTimer.current);
       
       gameTimer.current = window.setInterval(() => {
@@ -657,26 +661,27 @@ const Game: React.FC = () => {
        isGameActiveRef.current = false;
        pauseStartTimeRef.current = Date.now();
        
-       // Pause BGM but do not reset time
        if (bgmRef.current) {
            bgmRef.current.pause();
        }
-       // Stop Timer
        if (gameTimer.current) {
            clearInterval(gameTimer.current);
            gameTimer.current = null;
        }
-       
-       // Stop Metronome
        if (metronomeInterval.current) {
            clearInterval(metronomeInterval.current);
            metronomeInterval.current = null;
        }
-       
-       // Stop Audio Analysis Loop but KEEP STREAM alive for Gemini
-       // We do not close audioContextRef here to allow fast resume
        stopMicAnalysis(true); // keepStream=true
        
+    } else if (gameState === 'COUNTDOWN') {
+        // KEEP ALIVE: Ensure BGM is playing silently to maintain "User Gesture" token
+        if (bgmRef.current) {
+            bgmRef.current.volume = 0; // Silence
+            if (bgmRef.current.paused) {
+                 bgmRef.current.play().catch(e => console.warn("Silent warmup failed", e));
+            }
+        }
     } else {
       // READY / FINISHED
       isGameActiveRef.current = false;
@@ -690,7 +695,7 @@ const Game: React.FC = () => {
     }
     
     return () => {
-        // Cleanup on unmount or strict state change only if needed
+        // Cleanup
     };
   }, [gameState]);
 
@@ -732,18 +737,21 @@ const Game: React.FC = () => {
     // 1. Reset Game State first (which might clean up old contexts)
     resetGame();
 
-    // 2. UNLOCK BGM: Play silence/briefly
+    // 2. UNLOCK BGM: Start playing SILENTLY immediately on click
     if (bgmRef.current) {
         try {
-            // Play then immediately pause to unlock the element for future programmatic use
-            bgmRef.current.play().then(() => {
-                bgmRef.current?.pause();
-                bgmRef.current!.currentTime = 0;
-            }).catch(e => console.warn("BGM Unlock failed")); // sanitized
-        } catch(e) { console.warn("BGM access error"); } // sanitized
+            bgmRef.current.volume = 0;
+            bgmRef.current.currentTime = 0;
+            await bgmRef.current.play();
+            // Do NOT pause here. Keep it playing silently during countdown.
+            // We will restart/unmute it when gameState becomes 'PLAYING'.
+        } catch(e) { 
+            console.warn("BGM Access Error", e);
+            setError("BGMの再生に失敗しました。URLを確認してください。");
+        }
     }
 
-    // 3. UNLOCK AUDIO CONTEXT: Create or resume immediately on user gesture
+    // 3. UNLOCK AUDIO CONTEXT
     if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
@@ -1187,13 +1195,14 @@ const Game: React.FC = () => {
             ref={bgmRef} 
             loop 
             preload="auto"
+            crossOrigin="anonymous"
             src={bgmSource}
             onCanPlay={() => {
-                if(bgmRef.current) bgmRef.current.volume = volume;
-                setError(null); // Clear errors if audio loads successfully
+                setError(null); 
             }}
             onError={(e) => {
-                console.warn("BGM Load Error:", bgmSource); // SAFE LOGGING: Log string only, not event object
+                console.warn("BGM Load Error:", bgmSource);
+                setError("BGMの読み込みに失敗しました: " + bgmSource);
             }}
         />
         {/* Menu BGM */}
@@ -1201,6 +1210,7 @@ const Game: React.FC = () => {
             ref={menuBgmRef} 
             loop 
             preload="auto"
+            crossOrigin="anonymous"
             src={menuBgmUrl}
             onError={() => console.warn("Menu BGM not found")}
         />
