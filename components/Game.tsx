@@ -64,9 +64,9 @@ const Game: React.FC = () => {
   // Animation State
   const [isHitAnimating, setIsHitAnimating] = useState(false);
 
-  // Asset URLs - using simple relative paths to avoid URL construction errors in some environments
-  const defaultBgmUrl = 'bgm/bgm.mp3';
-  const menuBgmUrl = 'bgm/top.mp3';
+  // Asset URLs - using GitHub Raw URLs for reliable hosting
+  const defaultBgmUrl = 'https://raw.githubusercontent.com/mshinyukari/-/main/bgm/bgm.mp3';
+  const menuBgmUrl = 'https://raw.githubusercontent.com/mshinyukari/-/main/bgm/top.mp3';
 
   // Settings State
   const [volume, setVolume] = useState(0.5);
