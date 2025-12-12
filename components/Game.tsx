@@ -64,9 +64,9 @@ const Game: React.FC = () => {
   // Animation State
   const [isHitAnimating, setIsHitAnimating] = useState(false);
 
-  // Asset URLs - using jsDelivr for reliable CDN hosting from GitHub
-  const defaultBgmUrl = 'https://cdn.jsdelivr.net/gh/mshinyukari/-@main/bgm/bgm.mp3';
-  const menuBgmUrl = 'https://cdn.jsdelivr.net/gh/mshinyukari/-@main/bgm/top.mp3';
+  // Asset URLs - using GitHub Raw URLs for reliable hosting
+  const defaultBgmUrl = 'https://raw.githubusercontent.com/mshinyukari/-/main/bgm/bgm.mp3';
+  const menuBgmUrl = 'https://raw.githubusercontent.com/mshinyukari/-/main/bgm/top.mp3';
 
   // Settings State
   const [volume, setVolume] = useState(0.5);
@@ -1195,8 +1195,7 @@ const Game: React.FC = () => {
             ref={bgmRef} 
             loop 
             preload="auto"
-            // ADDED playsInline for better mobile compatibility
-            playsInline
+            // REMOVED crossOrigin="anonymous" to allow raw.githubusercontent.com URLs to work without CORS errors
             src={bgmSource}
             onCanPlay={() => {
                 setError(null); 
@@ -1211,8 +1210,7 @@ const Game: React.FC = () => {
             ref={menuBgmRef} 
             loop 
             preload="auto"
-            // ADDED playsInline
-            playsInline
+            // REMOVED crossOrigin="anonymous"
             src={menuBgmUrl}
             onError={() => console.warn("Menu BGM not found")}
         />
