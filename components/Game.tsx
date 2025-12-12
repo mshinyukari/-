@@ -64,10 +64,14 @@ const Game: React.FC = () => {
   // Animation State
   const [isHitAnimating, setIsHitAnimating] = useState(false);
 
+  // Asset URLs - using simple relative paths to avoid URL construction errors in some environments
+  const defaultBgmUrl = 'bgm/bgm.mp3';
+  const menuBgmUrl = 'bgm/top.mp3';
+
   // Settings State
-  // Default path changed to relative (no leading slash) to support sub-directory deployments
   const [volume, setVolume] = useState(0.5);
-  const [bgmSource, setBgmSource] = useState<string>('bgm/bgm.mp3');
+  const [bgmSource, setBgmSource] = useState<string>(defaultBgmUrl);
+  const [customUrl, setCustomUrl] = useState(''); // State for manual URL input
   const [micThreshold, setMicThreshold] = useState(30); // 0-100 visual scale
   const [inputLevel, setInputLevel] = useState(0);
   const [isMicTesting, setIsMicTesting] = useState(false);
@@ -118,10 +122,22 @@ const Game: React.FC = () => {
           const file = e.target.files[0];
           const url = URL.createObjectURL(file);
           setBgmSource(url);
-          // Revoke old URL if it was a blob URL (simple check if it starts with blob:)
+          setCustomUrl(''); // Clear custom URL if file selected
+          // Revoke old URL if it was a blob URL
           if (bgmSource.startsWith('blob:')) {
               URL.revokeObjectURL(bgmSource);
           }
+      }
+  };
+
+  // Handle URL Input
+  const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const url = e.target.value;
+      setCustomUrl(url);
+      if (url) {
+          setBgmSource(url);
+      } else {
+          setBgmSource(defaultBgmUrl);
       }
   };
 
@@ -993,9 +1009,16 @@ const Game: React.FC = () => {
                                  type="file" 
                                  accept="audio/*"
                                  onChange={handleBgmSelect}
-                                 className="w-full text-xs text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100 cursor-pointer"
+                                 className="w-full text-xs text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100 cursor-pointer mb-2"
                              />
-                             <div className="text-[10px] text-slate-400 mt-1 leading-tight">※BGMが再生されない場合は、ここでファイルを選択してください。</div>
+                             <input 
+                                 type="text"
+                                 placeholder="またはURLを入力 (GitHub Rawなど)"
+                                 value={customUrl}
+                                 onChange={handleUrlChange}
+                                 className="w-full text-xs p-2 rounded-lg border-2 border-sky-200 text-slate-600 bg-white focus:outline-none focus:border-sky-400"
+                             />
+                             <div className="text-[10px] text-slate-400 mt-1 leading-tight">※Github等のURLを直接指定できます</div>
                          </div>
 
                          {/* Mic Test Section */}
@@ -1178,7 +1201,7 @@ const Game: React.FC = () => {
             ref={menuBgmRef} 
             loop 
             preload="auto"
-            src="bgm/top.mp3"
+            src={menuBgmUrl}
             onError={() => console.warn("Menu BGM not found")}
         />
         <Crowd progress={Math.min(score / CLEAR_THRESHOLDS[gameMode], 1)} />
